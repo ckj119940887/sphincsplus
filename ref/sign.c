@@ -49,28 +49,32 @@ unsigned long long crypto_sign_seedbytes(void)
  * Generates an SPX key pair given a seed of length
  * Format sk: [SK_SEED || SK_PRF || PUB_SEED || root]
  * Format pk: [PUB_SEED || root]
+ * 生成密钥对
  */
 int crypto_sign_seed_keypair(unsigned char *pk, unsigned char *sk,
                              const unsigned char *seed)
 {
+    // 密钥和公钥的上下文
     spx_ctx ctx;
 
     /* Initialize SK_SEED, SK_PRF and PUB_SEED from seed. */
     memcpy(sk, seed, CRYPTO_SEEDBYTES);
 
-    memcpy(pk, sk + 2*SPX_N, SPX_N);
+    memcpy(pk, sk + 2 * SPX_N, SPX_N);
 
     memcpy(ctx.pub_seed, pk, SPX_N);
     memcpy(ctx.sk_seed, sk, SPX_N);
 
     /* This hook allows the hash function instantiation to do whatever
        preparation or computation it needs, based on the public seed. */
+    // 根据 PUB_SEED 做哈希实例初始化（SHA2/HARAKA会预吸收种子，SHAKE为空操作）。
     initialize_hash_function(&ctx);
 
     /* Compute root node of the top-most subtree. */
-    merkle_gen_root(sk + 3*SPX_N, &ctx);
+    // 生成最顶层子树的根 root（这就是公钥里的 root）
+    merkle_gen_root(sk + 3 * SPX_N, &ctx);
 
-    memcpy(pk + SPX_N, sk + 3*SPX_N, SPX_N);
+    memcpy(pk + SPX_N, sk + 3 * SPX_N, SPX_N);
 
     return 0;
 }
@@ -82,11 +86,11 @@ int crypto_sign_seed_keypair(unsigned char *pk, unsigned char *sk,
  */
 int crypto_sign_keypair(unsigned char *pk, unsigned char *sk)
 {
-  unsigned char seed[CRYPTO_SEEDBYTES];
-  randombytes(seed, CRYPTO_SEEDBYTES);
-  crypto_sign_seed_keypair(pk, sk, seed);
+    unsigned char seed[CRYPTO_SEEDBYTES];
+    randombytes(seed, CRYPTO_SEEDBYTES);
+    crypto_sign_seed_keypair(pk, sk, seed);
 
-  return 0;
+    return 0;
 }
 
 /**
@@ -98,7 +102,7 @@ int crypto_sign_signature(uint8_t *sig, size_t *siglen,
     spx_ctx ctx;
 
     const unsigned char *sk_prf = sk + SPX_N;
-    const unsigned char *pk = sk + 2*SPX_N;
+    const unsigned char *pk = sk + 2 * SPX_N;
 
     unsigned char optrand[SPX_N];
     unsigned char mhash[SPX_FORS_MSG_BYTES];
@@ -137,7 +141,8 @@ int crypto_sign_signature(uint8_t *sig, size_t *siglen,
     fors_sign(sig, root, mhash, &ctx, wots_addr);
     sig += SPX_FORS_BYTES;
 
-    for (i = 0; i < SPX_D; i++) {
+    for (i = 0; i < SPX_D; i++)
+    {
         set_layer_addr(tree_addr, i);
         set_tree_addr(tree_addr, tree);
 
@@ -148,7 +153,7 @@ int crypto_sign_signature(uint8_t *sig, size_t *siglen,
         sig += SPX_WOTS_BYTES + SPX_TREE_HEIGHT * SPX_N;
 
         /* Update the indices for the next layer. */
-        idx_leaf = (tree & ((1 << SPX_TREE_HEIGHT)-1));
+        idx_leaf = (tree & ((1 << SPX_TREE_HEIGHT) - 1));
         tree = tree >> SPX_TREE_HEIGHT;
     }
 
@@ -176,7 +181,8 @@ int crypto_sign_verify(const uint8_t *sig, size_t siglen,
     uint32_t tree_addr[8] = {0};
     uint32_t wots_pk_addr[8] = {0};
 
-    if (siglen != SPX_BYTES) {
+    if (siglen != SPX_BYTES)
+    {
         return -1;
     }
 
@@ -203,7 +209,8 @@ int crypto_sign_verify(const uint8_t *sig, size_t siglen,
     sig += SPX_FORS_BYTES;
 
     /* For each subtree.. */
-    for (i = 0; i < SPX_D; i++) {
+    for (i = 0; i < SPX_D; i++)
+    {
         set_layer_addr(tree_addr, i);
         set_tree_addr(tree_addr, tree);
 
@@ -227,18 +234,18 @@ int crypto_sign_verify(const uint8_t *sig, size_t siglen,
         sig += SPX_TREE_HEIGHT * SPX_N;
 
         /* Update the indices for the next layer. */
-        idx_leaf = (tree & ((1 << SPX_TREE_HEIGHT)-1));
+        idx_leaf = (tree & ((1 << SPX_TREE_HEIGHT) - 1));
         tree = tree >> SPX_TREE_HEIGHT;
     }
 
     /* Check if the root node equals the root node in the public key. */
-    if (memcmp(root, pub_root, SPX_N)) {
+    if (memcmp(root, pub_root, SPX_N))
+    {
         return -1;
     }
 
     return 0;
 }
-
 
 /**
  * Returns an array containing the signature followed by the message.
@@ -266,7 +273,8 @@ int crypto_sign_open(unsigned char *m, unsigned long long *mlen,
 {
     /* The API caller does not necessarily know what size a signature should be
        but SPHINCS+ signatures are always exactly SPX_BYTES. */
-    if (smlen < SPX_BYTES) {
+    if (smlen < SPX_BYTES)
+    {
         memset(m, 0, smlen);
         *mlen = 0;
         return -1;
@@ -274,7 +282,8 @@ int crypto_sign_open(unsigned char *m, unsigned long long *mlen,
 
     *mlen = smlen - SPX_BYTES;
 
-    if (crypto_sign_verify(sm, SPX_BYTES, sm + SPX_BYTES, (size_t)*mlen, pk)) {
+    if (crypto_sign_verify(sm, SPX_BYTES, sm + SPX_BYTES, (size_t)*mlen, pk))
+    {
         memset(m, 0, smlen);
         *mlen = 0;
         return -1;
