@@ -67,7 +67,11 @@ int crypto_sign_seed_keypair(unsigned char *pk, unsigned char *sk,
 
     /* This hook allows the hash function instantiation to do whatever
        preparation or computation it needs, based on the public seed. */
-    // 根据 PUB_SEED 做哈希实例初始化（SHA2/HARAKA会预吸收种子，SHAKE为空操作）。
+    // 根据 PUB_SEED 做哈希实例初始化（SHA2/HAoRAKA会预吸收种子，SHAKE为空操作）。
+    // initialize_hash_function有三份实现，编译时根据你选的参数集（SHAKE / SHA2 / Haraka）只会启用其中一个：
+    // ref/hash_shake.c：SHAKE 参数集（sphincs-shake-*）
+    // ref/hash_sha2.c：SHA2 参数集（sphincs-sha2-*）
+    // ref/hash_haraka.c：Haraka 参数集（sphincs-haraka-*）
     initialize_hash_function(&ctx);
 
     /* Compute root node of the top-most subtree. */
@@ -96,6 +100,7 @@ int crypto_sign_keypair(unsigned char *pk, unsigned char *sk)
 /**
  * Returns an array containing a detached signature.
  */
+// 最后列出的签名布局：R || FORS_sig || (WOTS_sig0+path0) || (WOTS_sig1+path1)
 int crypto_sign_signature(uint8_t *sig, size_t *siglen,
                           const uint8_t *m, size_t mlen, const uint8_t *sk)
 {
@@ -126,21 +131,31 @@ int crypto_sign_signature(uint8_t *sig, size_t *siglen,
     /* Optionally, signing can be made non-deterministic using optrand.
        This can help counter side-channel attacks that would benefit from
        getting a large number of traces when the signer uses the same nodes. */
+    // 生成optrand
     randombytes(optrand, SPX_N);
     /* Compute the digest randomization value. */
+    // 玩具里 R = H(SK_PRF + optrand + m)
+    // gen_message_random() 用 SK_PRF + optrand + M 生成 R，并且直接写进签名开头（sig 指针当前还在开头）
     gen_message_random(sig, sk_prf, optrand, m, mlen, &ctx);
 
     /* Derive the message digest and leaf index from R, PK and M. */
+    // 用 R||pk||m 算 mhash/tree/idx_leaf
     hash_message(mhash, &tree, &idx_leaf, sig, pk, m, mlen, &ctx);
+    // 签名指针跳过 R，下一块开始写 FORS_sig
     sig += SPX_N;
 
+    // 在做 FORS 前先把“地址”设到正确位置（等价于玩具里把 (tree, idx_leaf) 喂进你那套公式）
     set_tree_addr(wots_addr, tree);
     set_keypair_addr(wots_addr, idx_leaf);
 
     /* Sign the message hash using FORS. */
+    // fors_sign() 把 FORS 签名写入 sig 当前指向的位置
+    // 同时把 FORS 公钥（root_fors）输出到 root 变量
+    // sig += SPX_FORS_BYTES 对应“指针跳过 FORS 签名，下一块开始写第0层的 WOTS+auth"
     fors_sign(sig, root, mhash, &ctx, wots_addr);
     sig += SPX_FORS_BYTES;
 
+    // Hypertree 第0层：WOTS 签 root_fors + auth_path → 得到本层 root
     for (i = 0; i < SPX_D; i++)
     {
         set_layer_addr(tree_addr, i);
@@ -149,10 +164,15 @@ int crypto_sign_signature(uint8_t *sig, size_t *siglen,
         copy_subtree_addr(wots_addr, tree_addr);
         set_keypair_addr(wots_addr, idx_leaf);
 
+        // 用 WOTS 对当前 root（此时是 root_fors）做签名得到 WOTS_sig0
+        // 给出该叶子的 auth_path0
+        // 算出本层子树根 root_layer0
+        // 真实里这些都被 merkle_sign() 一次性完成
         merkle_sign(sig, root, &ctx, wots_addr, tree_addr, idx_leaf);
         sig += SPX_WOTS_BYTES + SPX_TREE_HEIGHT * SPX_N;
 
         /* Update the indices for the next layer. */
+        // 更新 idx/tree，进入下一层，再做一次
         idx_leaf = (tree & ((1 << SPX_TREE_HEIGHT) - 1));
         tree = tree >> SPX_TREE_HEIGHT;
     }
@@ -198,6 +218,7 @@ int crypto_sign_verify(const uint8_t *sig, size_t siglen,
 
     /* Derive the message digest and leaf index from R || PK || M. */
     /* The additional SPX_N is a result of the hash domain separator. */
+    // 用 R||pk||m 重算 mhash/tree/idx_leaf
     hash_message(mhash, &tree, &idx_leaf, sig, pk, m, mlen, &ctx);
     sig += SPX_N;
 
@@ -205,6 +226,7 @@ int crypto_sign_verify(const uint8_t *sig, size_t siglen,
     set_tree_addr(wots_addr, tree);
     set_keypair_addr(wots_addr, idx_leaf);
 
+    // 用 FORS_sig 重建 root_fors
     fors_pk_from_sig(root, sig, mhash, &ctx, wots_addr);
     sig += SPX_FORS_BYTES;
 
@@ -222,13 +244,16 @@ int crypto_sign_verify(const uint8_t *sig, size_t siglen,
         /* The WOTS public key is only correct if the signature was correct. */
         /* Initially, root is the FORS pk, but on subsequent iterations it is
            the root of the subtree below the currently processed subtree. */
+        // 从 WOTS 签名恢复 WOTS 公钥
         wots_pk_from_sig(wots_pk, sig, root, &ctx, wots_addr);
         sig += SPX_WOTS_BYTES;
 
         /* Compute the leaf node using the WOTS public key. */
+        // 把 WOTS 公钥压成叶子 leaf（玩具里 leaf = H(wots_pk) 的角色）
         thash(leaf, wots_pk, SPX_WOTS_LEN, &ctx, wots_pk_addr);
 
         /* Compute the root node of this subtree. */
+        // 用 auth_path 算本层子树 root
         compute_root(root, leaf, idx_leaf, 0, sig, SPX_TREE_HEIGHT,
                      &ctx, tree_addr);
         sig += SPX_TREE_HEIGHT * SPX_N;
